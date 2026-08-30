@@ -1,0 +1,10 @@
+# Phase 1 dependencies. No Spark, no Kafka.
+pandas>=2.2
+pyarrow>=15
+duckdb>=1.0
+pyiceberg>=0.7
+minio>=7.2
+pyyaml>=6.0
+openai>=1.30          # OpenAI-compatible client for ollama / OpenShift AI
+anthropic>=0.40       # optional: --backend claude
+pytest>=8.0

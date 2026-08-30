@@ -1,0 +1,38 @@
+# Copy to config.ini and fill in your lab values.
+# NEVER commit config.ini (see .gitignore). Only this .example file is tracked.
+
+[minio]
+# AIStor / MinIO S3 API endpoint, host:port or host (no scheme).
+endpoint = minio.apps.example.com
+access_key = CHANGEME
+secret_key = CHANGEME
+# secure = true uses https; set false for plain-http lab clusters.
+secure = true
+raw_bucket = telemetry-raw
+
+[iceberg]
+# AIStor serves its built-in Iceberg REST catalog at /_iceberg.
+uri = https://minio.apps.example.com/_iceberg
+warehouse = telemetry
+namespace = observability
+# S3 endpoint PyIceberg uses for the underlying object IO (usually the same host).
+s3_endpoint = https://minio.apps.example.com
+access_key = CHANGEME
+secret_key = CHANGEME
+
+[model]
+# backend: ollama | openshift_ai | claude
+backend = ollama
+# base_url: OpenAI-compatible endpoint for ollama/openshift_ai
+#   ollama:       http://ollama:11434/v1
+#   openshift_ai: https://<vllm-route>/v1
+base_url = http://ollama:11434/v1
+model_name = granite3-dense:8b
+# api_key: required for claude backend (ANTHROPIC_API_KEY); optional otherwise.
+api_key =
+
+[detect]
+heap_limit_mb = 4096
+io_z_threshold = 4
+retrans_pct = 5
+latency_x = 2
