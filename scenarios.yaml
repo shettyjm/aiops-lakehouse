@@ -1,0 +1,63 @@
+# Incident scenarios overlaid on the baseline fleet (M1).
+# Times are minutes from the start of the generated window. Targets are chosen
+# as the first `count` VMs of `app` (optionally filtered by `site`), which keeps
+# selection deterministic for a given fleet + seed; or pin exact `vms: [...]`.
+#
+# Templates:
+#   heap_leak      linear heap growth + gc/latency coupling, OOM event at cap
+#   io_saturation  disk await ramp, iops collapse, slow_query WARN events
+#   net_partition  net_retrans spike, conn_reset ERROR events
+#   error_storm    error_rate jump, 5xx ERROR events
+#   noisy_neighbor cpu steal on co-located generic-workers
+#
+# The default set tells the demo story: an ehr-api-adjacent postgres IO
+# saturation plus a patient-onboarding heap leak that OOMs late in the window
+# (so M3's --asof replay shows the P1 firing ~40 min before the OOM).
+
+scenarios:
+  - name: onboarding-heap-leak
+    template: heap_leak
+    app: patient-onboarding
+    count: 3
+    start_min: 15
+    end_min: 120
+    params:
+      leak_mb_per_min: 26      # baseline ~1800 MB -> cap 4096 in ~88 min
+      heap_cap_mb: 4096
+
+  - name: db-io-saturation
+    template: io_saturation
+    app: postgres-db
+    count: 2
+    start_min: 35
+    end_min: 100
+    params:
+      await_ramp_ms_per_min: 3.0
+      iops_collapse_frac: 0.8   # iops falls to 20% of baseline at peak
+
+  - name: hl7-net-partition
+    template: net_partition
+    app: hl7-ingest
+    count: 2
+    start_min: 50
+    end_min: 80
+    params:
+      retrans_spike_pct: 8.0
+
+  - name: billing-error-storm
+    template: error_storm
+    app: billing-svc
+    count: 2
+    start_min: 60
+    end_min: 95
+    params:
+      error_jump_pct: 6.0
+
+  - name: worker-noisy-neighbor
+    template: noisy_neighbor
+    app: generic-worker
+    count: 5
+    start_min: 40
+    end_min: 110
+    params:
+      cpu_steal_pct: 35.0

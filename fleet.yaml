@@ -1,0 +1,56 @@
+# Fleet spec for the synthetic 2,000-VM telemetry generator (M1).
+# Counts sum to 2000 across the two sites (round-robin split, ~50/50).
+# Each app carries a per-metric baseline mean; noise is added as a fraction
+# of the mean (noise_pct, with per-metric floors so near-zero means still wiggle).
+
+sample_interval_s: 30
+noise_pct: 0.08          # gaussian noise std = noise_pct * baseline mean
+sites:
+  - dc-east
+  - dc-west
+
+# All nine numeric metrics from the vm_metrics data contract must be present
+# in every app baseline. Units: cpu_pct %, heap_mb MB, gc_pause_ms ms,
+# disk_io_await_ms ms, disk_iops iops, net_mbps Mbps, net_retrans_pct %,
+# app_latency_ms ms, error_rate_pct %.
+apps:
+  patient-onboarding:
+    count: 220
+    baseline: {cpu_pct: 35, heap_mb: 1800, gc_pause_ms: 40, disk_io_await_ms: 5,
+               disk_iops: 800, net_mbps: 120, net_retrans_pct: 0.3,
+               app_latency_ms: 90, error_rate_pct: 0.2}
+  ehr-api:
+    count: 380
+    baseline: {cpu_pct: 45, heap_mb: 2200, gc_pause_ms: 55, disk_io_await_ms: 6,
+               disk_iops: 1200, net_mbps: 200, net_retrans_pct: 0.4,
+               app_latency_ms: 70, error_rate_pct: 0.3}
+  scheduler-svc:
+    count: 180
+    baseline: {cpu_pct: 25, heap_mb: 1200, gc_pause_ms: 30, disk_io_await_ms: 4,
+               disk_iops: 400, net_mbps: 60, net_retrans_pct: 0.2,
+               app_latency_ms: 60, error_rate_pct: 0.15}
+  billing-svc:
+    count: 160
+    baseline: {cpu_pct: 30, heap_mb: 1500, gc_pause_ms: 35, disk_io_await_ms: 5,
+               disk_iops: 500, net_mbps: 80, net_retrans_pct: 0.25,
+               app_latency_ms: 110, error_rate_pct: 0.25}
+  hl7-ingest:
+    count: 140
+    baseline: {cpu_pct: 40, heap_mb: 1600, gc_pause_ms: 45, disk_io_await_ms: 7,
+               disk_iops: 900, net_mbps: 150, net_retrans_pct: 0.5,
+               app_latency_ms: 130, error_rate_pct: 0.4}
+  postgres-db:
+    count: 90
+    baseline: {cpu_pct: 50, heap_mb: 800, gc_pause_ms: 5, disk_io_await_ms: 8,
+               disk_iops: 2000, net_mbps: 90, net_retrans_pct: 0.3,
+               app_latency_ms: 25, error_rate_pct: 0.1}
+  kafka:
+    count: 60
+    baseline: {cpu_pct: 45, heap_mb: 3000, gc_pause_ms: 60, disk_io_await_ms: 6,
+               disk_iops: 1500, net_mbps: 300, net_retrans_pct: 0.35,
+               app_latency_ms: 15, error_rate_pct: 0.1}
+  generic-worker:
+    count: 770
+    baseline: {cpu_pct: 20, heap_mb: 900, gc_pause_ms: 20, disk_io_await_ms: 4,
+               disk_iops: 300, net_mbps: 40, net_retrans_pct: 0.2,
+               app_latency_ms: 50, error_rate_pct: 0.15}
