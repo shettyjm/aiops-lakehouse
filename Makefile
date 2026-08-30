@@ -25,8 +25,11 @@ setup: ## Wire up AIStor: mc alias, raw bucket, Iceberg warehouse (idempotent)
 gen: ## Generate synthetic 2,000-VM telemetry (M1)
 	$(PYTHON) bin/02_generate.py $(ARGS)
 
-load: ## Load raw parquet into Iceberg tables (M2)
-	$(PYTHON) bin/03_load_iceberg.py --source $(SOURCE) $(ARGS)
+load: ## Load raw parquet into Iceberg tables (M2). Defaults to s3; ARGS='--source local' to load local chunks
+	$(PYTHON) bin/03_load_iceberg.py $(ARGS)
+
+lake-info: ## Show Iceberg tables, row counts, snapshots, time-travel (M2)
+	$(PYTHON) bin/lake_info.py $(ARGS)
 
 detect: ## Run detection engine, write alerts (M3)
 	$(PYTHON) bin/04_detect.py --source $(SOURCE) $(ARGS)
