@@ -44,7 +44,7 @@ _APP_EVENTS_FIELDS = [
 TABLE_FIELDS = {"vm_metrics": _VM_METRICS_FIELDS, "app_events": _APP_EVENTS_FIELDS}
 
 
-def _iceberg_schema(fields):
+def iceberg_schema(fields):
     from pyiceberg.schema import Schema
     from pyiceberg.types import (NestedField, TimestampType, StringType, FloatType)
     type_map = {"timestamp": TimestampType, "string": StringType, "float": FloatType}
@@ -53,12 +53,24 @@ def _iceberg_schema(fields):
     return Schema(*cols)
 
 
-def _day_partition_spec():
+def day_partition_spec():
     from pyiceberg.partitioning import PartitionSpec, PartitionField
     from pyiceberg.transforms import DayTransform
     # source_id=1 -> ts (first field in every table)
     return PartitionSpec(PartitionField(source_id=1, field_id=1000,
                                         transform=DayTransform(), name="ts_day"))
+
+
+def ensure_table(catalog, namespace: str, name: str, fields) -> object:
+    """Create a day(ts)-partitioned table if missing; return the loaded Table."""
+    from pyiceberg.exceptions import TableAlreadyExistsError
+    ident = (namespace, name)
+    try:
+        catalog.create_table(ident, schema=iceberg_schema(fields),
+                             partition_spec=day_partition_spec())
+    except TableAlreadyExistsError:
+        pass
+    return catalog.load_table(ident)
 
 
 # --------------------------------------------------------------------------- #
@@ -113,22 +125,13 @@ def minio_client(cfg, insecure: bool = False):
 def ensure_tables(catalog, namespace: str = NAMESPACE_DEFAULT) -> dict:
     """Create the namespace and both tables (day-partitioned) if missing.
     Returns {table_name: Table}. Idempotent."""
-    from pyiceberg.exceptions import NamespaceAlreadyExistsError, TableAlreadyExistsError
+    from pyiceberg.exceptions import NamespaceAlreadyExistsError
     try:
         catalog.create_namespace(namespace)
     except NamespaceAlreadyExistsError:
         pass
-
-    tables = {}
-    for name, fields in TABLE_FIELDS.items():
-        ident = (namespace, name)
-        try:
-            catalog.create_table(ident, schema=_iceberg_schema(fields),
-                                 partition_spec=_day_partition_spec())
-        except TableAlreadyExistsError:
-            pass
-        tables[name] = catalog.load_table(ident)
-    return tables
+    return {name: ensure_table(catalog, namespace, name, fields)
+            for name, fields in TABLE_FIELDS.items()}
 
 
 def table_arrow_batch(table, df: pd.DataFrame):

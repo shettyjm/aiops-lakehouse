@@ -22,8 +22,9 @@ scenarios:
     start_min: 15
     end_min: 120
     params:
-      leak_mb_per_min: 26      # baseline ~1800 MB -> cap 4096 in ~88 min
-      heap_cap_mb: 4096
+      leak_mb_per_min: 21      # baseline ~1800 MB -> projected OOM just past the
+      heap_cap_mb: 4096        # 2h window, so --asof 45/30/15/0 all show a
+                               # shrinking ETA (no mid-window OOM/restart)
 
   - name: db-io-saturation
     template: io_saturation

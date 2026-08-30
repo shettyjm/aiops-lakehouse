@@ -251,18 +251,21 @@ def _tpl_heap_leak(mats, rows, cols, elapsed, params, emit) -> None:
     cap = float(params.get("heap_cap_mb", 4096.0))
     delta = leak * elapsed[cols]                        # (n_cols,)
     for r in rows:
-        heap = mats["heap_mb"][r, cols] + delta
-        # GC pause and latency climb with heap pressure toward the cap.
-        frac = np.clip(heap / cap, 0.0, 1.5)
+        base = mats["heap_mb"][r, cols]                 # baseline + per-sample noise
+        # OOM and coupling track the underlying ramp (baseline mean + leak), so a
+        # single noisy sample near the cap can't trigger a spurious OOM/restart.
+        underlying = base.mean() + delta
+        heap = base + delta                             # reported value keeps noise
+        frac = np.clip(underlying / cap, 0.0, 1.5)
         mats["gc_pause_ms"][r, cols] += 120.0 * frac ** 2
         mats["app_latency_ms"][r, cols] += 200.0 * frac ** 2
-        # OOM at the cap: emit once, then the process "restarts" (heap resets).
-        over = np.where(heap >= cap)[0]
+        # OOM when the trend crosses the cap: emit once, then process "restarts".
+        over = np.where(underlying >= cap)[0]
         if over.size:
             first = over[0]
             emit(int(r), int(cols[first]), "ERROR", "oom_kill",
                  f"java.lang.OutOfMemoryError: Java heap space (cap {int(cap)}MB)")
-            heap[first:] = mats["heap_mb"][r, cols][first:]   # back to baseline
+            heap[first:] = base[first:]                 # back to baseline
         mats["heap_mb"][r, cols] = np.minimum(heap, cap)
 
 

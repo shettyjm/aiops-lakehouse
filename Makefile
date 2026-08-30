@@ -34,6 +34,9 @@ lake-info: ## Show Iceberg tables, row counts, snapshots, time-travel (M2)
 detect: ## Run detection engine, write alerts (M3)
 	$(PYTHON) bin/04_detect.py --source $(SOURCE) $(ARGS)
 
+replay: ## Heap-leak early-warning replay timeline (M3 money-shot)
+	./bin/replay_demo.sh --source $(SOURCE) $(ARGS)
+
 chat: ## Ask the SRE copilot a question (M4)
 	$(PYTHON) bin/05_copilot.py --source $(SOURCE) $(ARGS)
 
