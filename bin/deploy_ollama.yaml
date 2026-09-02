@@ -1,0 +1,96 @@
+# Sovereign local model serving for the copilot (M4).
+# Deploys Ollama on the OpenShift SNO cluster (CPU-only), exposes an
+# OpenAI-compatible API at /v1, and persists pulled models on a PVC.
+#
+# Apply:
+#   oc new-project aiops        # or: oc project aiops
+#   oc apply -f bin/deploy_ollama.yaml
+#
+# Pull the model once the pod is Running (granite is small enough for CPU/SNO):
+#   oc exec deploy/ollama -- ollama pull granite3-dense:8b
+#   # or: qwen2.5:7b-instruct
+#
+# Point config.ini [model] at the in-cluster service:
+#   base_url = http://ollama.aiops.svc.cluster.local:11434/v1
+#   model_name = granite3-dense:8b
+# (or use the external Route host below with https + /v1)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  labels: {app: ollama}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  labels: {app: ollama}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ollama}
+  template:
+    metadata:
+      labels: {app: ollama}
+    spec:
+      containers:
+        - name: ollama
+          image: docker.io/ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "24h"
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              cpu: "6"
+              memory: 12Gi
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet: {path: /api/tags, port: 11434}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  labels: {app: ollama}
+spec:
+  selector: {app: ollama}
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ollama
+  labels: {app: ollama}
+spec:
+  to:
+    kind: Service
+    name: ollama
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
