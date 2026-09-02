@@ -41,7 +41,8 @@ MinIO AIStor + OpenShift lakehouse. You help on-call engineers triage fleet \
 telemetry. Rules:
 - Ground EVERY claim in query results. Cite concrete numbers (ms, MB, %, counts).
 - Never invent data. If a query returns nothing, say so.
-- Prefer the tools over guessing. Use run_sql for metrics, get_alerts for alerts.
+- Prefer the tools over guessing. Use run_sql for metrics, get_alerts for alerts,
+  and trace_dependencies for blast-radius / "what breaks if X goes down" questions.
 - Be concise and operational: state the likely root cause and a recommended action.
 
 {SCHEMA_DOC}"""
@@ -97,6 +98,46 @@ class LakeTools:
         cols = ["severity", "rule", "vm_id", "app", "headline"]
         return f"{len(alerts)} alert(s)\n{alerts[cols].to_string(index=False)}"
 
+    def trace_dependencies(self, app: str, asof_min: float = 0.0) -> str:
+        """Blast-radius traversal over the topology graph (recursive CTEs):
+        downstream = apps impacted if `app` fails; upstream = what `app` needs.
+        Each app is annotated with its active alerts."""
+        edges = ("SELECT DISTINCT app, depends_on_app FROM topology "
+                 "WHERE depends_on_app IS NOT NULL AND depends_on_app <> ''")
+        down = self.con.execute(f"""
+            WITH RECURSIVE edges AS ({edges}),
+              impact(app, depth) AS (
+                SELECT app, 1 FROM edges WHERE depends_on_app = ?
+                UNION
+                SELECT e.app, i.depth + 1 FROM edges e JOIN impact i ON e.depends_on_app = i.app)
+            SELECT app, min(depth) AS depth FROM impact GROUP BY app ORDER BY depth, app
+        """, [app]).fetch_df()
+        up = self.con.execute(f"""
+            WITH RECURSIVE edges AS ({edges}),
+              deps(app, depth) AS (
+                SELECT depends_on_app, 1 FROM edges WHERE app = ?
+                UNION
+                SELECT e.depends_on_app, d.depth + 1 FROM edges e JOIN deps d ON e.app = d.app)
+            SELECT app, min(depth) AS depth FROM deps GROUP BY app ORDER BY depth, app
+        """, [app]).fetch_df()
+
+        alerts = detect.detect(self.con, self.dc, asof_min=asof_min)
+
+        def annotate(df):
+            if df.empty:
+                return "  (none)"
+            out = []
+            for r in df.itertuples(index=False):
+                a = alerts[alerts["app"] == r.app] if not alerts.empty else alerts
+                tag = "" if a.empty else "  ALERTS: " + ", ".join(
+                    sorted({f"{s}:{ru}" for s, ru in zip(a["severity"], a["rule"])}))
+                out.append(f"  depth {r.depth}: {r.app}{tag}")
+            return "\n".join(out)
+
+        return (f"app: {app}\n"
+                f"downstream (impacted if {app} fails):\n{annotate(down)}\n"
+                f"upstream ({app} depends on):\n{annotate(up)}")
+
     # dispatch used by the agent loop
     def call(self, name: str, args: dict) -> str:
         try:
@@ -105,6 +146,8 @@ class LakeTools:
             if name == "get_alerts":
                 return self.get_alerts(args.get("severity"), args.get("app"),
                                        float(args.get("asof_min", 0)))
+            if name == "trace_dependencies":
+                return self.trace_dependencies(args["app"], float(args.get("asof_min", 0)))
             return f"unknown tool: {name}"
         except Exception as e:  # tool errors go back to the model, not the user
             return f"ERROR: {type(e).__name__}: {e}"
@@ -125,6 +168,14 @@ TOOL_DEFS = [
                     "properties": {"severity": {"type": "string"},
                                    "app": {"type": "string"}},
                     "required": []}},
+    {"name": "trace_dependencies",
+     "description": "Traverse the service topology for an app: which apps are "
+                    "impacted if it fails (downstream) and which it depends on "
+                    "(upstream), each with active alerts. Use for blast-radius / "
+                    "'what happens if X goes down' questions.",
+     "parameters": {"type": "object",
+                    "properties": {"app": {"type": "string"}},
+                    "required": ["app"]}},
 ]
 
 
@@ -214,8 +265,31 @@ def facts_text(g: dict) -> str:
     ])
 
 
+_BLAST_HINTS = ("goes down", "go down", "went down", "blast radius", "blast-radius",
+                "downstream", "upstream", "what breaks", "what happens if",
+                "depends on", "depend on", "fails", " fail", "outage", "impact")
+
+
+def is_blast_question(question: str) -> bool:
+    q = question.lower()
+    return any(h in q for h in _BLAST_HINTS)
+
+
+def _blast_narrative(question: str, tools: LakeTools, asof_min: float) -> str:
+    app = _target_app(question, tools)
+    trace = tools.trace_dependencies(app, asof_min)
+    return (f"## Blast radius: {app}\n\n{trace}\n\n"
+            f"**Interpretation:** if {app} degrades, every downstream app above "
+            f"loses its dependency; any already showing ALERTS is feeling it now. "
+            f"Trace the chain to connect a root-cause alert on {app} to the "
+            f"user-facing symptoms upstream.")
+
+
 def deterministic_answer(question: str, tools: LakeTools, asof_min: float = 0.0) -> str:
-    """A grounded RCA built purely from SQL — no model required."""
+    """A grounded answer built purely from SQL — no model required. Routes
+    blast-radius questions to the topology trace, others to the metrics RCA."""
+    if is_blast_question(question):
+        return _blast_narrative(question, tools, asof_min)
     return _narrative(_gather(question, tools, asof_min), tools.dc)
 
 
@@ -395,6 +469,13 @@ def answer(question: str, tools: LakeTools, cfg, backend: str,
         # aren't trustworthy (small models hallucinate). Fetch the real rows and
         # have it SUMMARISE those instead; if that fails, use the SQL narrative.
         if not res.tool_calls:
+            # Blast-radius questions -> deterministic topology trace directly.
+            if is_blast_question(question):
+                return AgentResult(
+                    text=_blast_narrative(question, tools, asof_min) +
+                         "\n\n_(model didn't query the lake; deterministic graph result.)_",
+                    backend=backend, used_fallback=True)
+            # Otherwise fetch real rows and have the model summarise those.
             g = _gather(question, tools, asof_min)
             try:
                 summary = _summarize_with_model(cfg, backend, question, g)

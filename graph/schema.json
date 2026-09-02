@@ -1,0 +1,57 @@
+{
+  "//": "Sketch: map the AIStor Iceberg tables to a property graph for PuppyGraph.",
+  "//catalog": "Point PuppyGraph at AIStor's REST catalog (same one PyIceberg uses).",
+  "catalogs": [
+    {
+      "name": "telemetry",
+      "type": "iceberg",
+      "rest": {
+        "uri": "https://<aistor-s3-route>/_iceberg",
+        "warehouse": "telemetry",
+        "sigv4Enabled": true,
+        "signingName": "s3tables",
+        "signingRegion": "us-east-1"
+      },
+      "s3": {
+        "endpoint": "https://<aistor-s3-route>",
+        "region": "us-east-1",
+        "pathStyleAccess": true,
+        "accessKey": "<ACCESS_KEY>",
+        "secretKey": "<SECRET_KEY>"
+      }
+    }
+  ],
+  "graph": {
+    "vertices": [
+      {
+        "label": "App",
+        "//": "distinct apps; derive from topology.app + topology.depends_on_app",
+        "table": "telemetry.observability.topology",
+        "id": "app",
+        "attributes": ["app", "site"]
+      },
+      {
+        "label": "VM",
+        "table": "telemetry.observability.topology",
+        "id": "vm_id",
+        "attributes": ["vm_id", "app", "site"]
+      }
+    ],
+    "edges": [
+      {
+        "label": "DEPENDS_ON",
+        "//": "app -> depends_on_app",
+        "table": "telemetry.observability.topology",
+        "from": {"label": "App", "key": "app"},
+        "to": {"label": "App", "key": "depends_on_app"}
+      },
+      {
+        "label": "RUNS_ON",
+        "//": "app -> its VMs",
+        "table": "telemetry.observability.topology",
+        "from": {"label": "App", "key": "app"},
+        "to": {"label": "VM", "key": "vm_id"}
+      }
+    ]
+  }
+}

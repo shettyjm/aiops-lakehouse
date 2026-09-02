@@ -43,6 +43,10 @@ _APP_EVENTS_FIELDS = [
 
 TABLE_FIELDS = {"vm_metrics": _VM_METRICS_FIELDS, "app_events": _APP_EVENTS_FIELDS}
 
+# Static dimension (M5): no ts, so unpartitioned and overwritten (not appended).
+TOPOLOGY_FIELDS = [("vm_id", "string"), ("app", "string"), ("site", "string"),
+                   ("depends_on_app", "string")]
+
 
 def iceberg_schema(fields):
     from pyiceberg.schema import Schema
@@ -61,16 +65,31 @@ def day_partition_spec():
                                         transform=DayTransform(), name="ts_day"))
 
 
-def ensure_table(catalog, namespace: str, name: str, fields) -> object:
-    """Create a day(ts)-partitioned table if missing; return the loaded Table."""
+def ensure_table(catalog, namespace: str, name: str, fields,
+                 partitioned: bool = True) -> object:
+    """Create the table if missing (day(ts)-partitioned unless partitioned=False,
+    e.g. the static topology dimension); return the loaded Table."""
     from pyiceberg.exceptions import TableAlreadyExistsError
+    from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC
     ident = (namespace, name)
+    spec = day_partition_spec() if partitioned else UNPARTITIONED_PARTITION_SPEC
     try:
-        catalog.create_table(ident, schema=iceberg_schema(fields),
-                             partition_spec=day_partition_spec())
+        catalog.create_table(ident, schema=iceberg_schema(fields), partition_spec=spec)
     except TableAlreadyExistsError:
         pass
     return catalog.load_table(ident)
+
+
+def load_topology(catalog, df, namespace: str = NAMESPACE_DEFAULT) -> int:
+    """Overwrite the static topology table with df (it's a dimension, not a
+    stream). Returns the row count written."""
+    import pyarrow as pa
+    table = ensure_table(catalog, namespace, "topology", TOPOLOGY_FIELDS,
+                         partitioned=False)
+    arrow = pa.Table.from_pandas(df[[f[0] for f in TOPOLOGY_FIELDS]],
+                                 schema=table.schema().as_arrow(), preserve_index=False)
+    table.overwrite(arrow)
+    return len(df)
 
 
 # --------------------------------------------------------------------------- #

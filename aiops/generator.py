@@ -46,6 +46,7 @@ _NOISE_FLOOR = {
 }
 
 EVENT_COLUMNS = ["ts", "vm_id", "app", "site", "level", "event_type", "message"]
+TOPOLOGY_COLUMNS = ["vm_id", "app", "site", "depends_on_app"]
 
 
 # --------------------------------------------------------------------------- #
@@ -147,6 +148,19 @@ class GenResult:
     events: pd.DataFrame           # app_events rows
     incident_vms: dict[str, list[str]]   # scenario name -> vm_ids hit
     ts: np.ndarray                 # (n_samples,) datetime64[ns] sample grid
+    topology: pd.DataFrame = dataclasses.field(default_factory=pd.DataFrame)
+
+
+def build_topology(fleet: Fleet, fleet_spec: dict) -> pd.DataFrame:
+    """One row per (vm_id, depends_on_app) from the app-level edges in
+    fleet_spec['topology']. Static dimension table (no ts)."""
+    edges = fleet_spec.get("topology", {}) or {}
+    rows = []
+    for i in range(fleet.n_vms):
+        app = fleet.app[i]
+        for dep in edges.get(app, []):
+            rows.append((fleet.vm_id[i], app, fleet.site[i], dep))
+    return pd.DataFrame(rows, columns=TOPOLOGY_COLUMNS)
 
 
 def _baseline_matrix(fleet: Fleet, fleet_spec: dict, n_samples: int,
@@ -338,7 +352,8 @@ def generate(fleet_spec: dict, scenarios: list[dict], start: datetime,
         events_df = events_df.sort_values(["ts", "vm_id"]).reset_index(drop=True)
 
     return GenResult(metrics=metrics_df, events=events_df,
-                     incident_vms=incident_vms, ts=ts)
+                     incident_vms=incident_vms, ts=ts,
+                     topology=build_topology(fleet, fleet_spec))
 
 
 def _as_naive_utc(dt: datetime) -> datetime:
@@ -377,6 +392,20 @@ def _partition_cols(df: pd.DataFrame) -> pd.DataFrame:
     out["dt"] = ts.dt.strftime("%Y-%m-%d")
     out["hour"] = ts.dt.strftime("%H")
     return out
+
+
+def write_flat(df: pd.DataFrame, root: str | Path, table: str,
+               basename: str = "part-0.parquet") -> Path:
+    """Write df as a single unpartitioned parquet under root/table/ (for static
+    dimension tables like topology, which have no ts to partition by)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    target = Path(root) / table
+    target.mkdir(parents=True, exist_ok=True)
+    if not df.empty:
+        pq.write_table(pa.Table.from_pandas(df, preserve_index=False),
+                       target / basename)
+    return target
 
 
 def write_dataset(df: pd.DataFrame, root: str | Path, table: str,

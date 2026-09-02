@@ -53,6 +53,32 @@ def _build_source_and_manifest(args, cfg):
     return source, ingest.ProcessedManifest(store), where
 
 
+def _load_topology(args, cfg, catalog) -> None:
+    """Read the topology parquet from s3/local (if present) and overwrite the
+    Iceberg topology table."""
+    import io
+    import pandas as pd
+    df = None
+    if args.source == "s3":
+        client, bucket = ingest.minio_client(cfg, args.insecure)
+        try:
+            resp = client.get_object(bucket, "topology/topology.parquet")
+            try:
+                df = pd.read_parquet(io.BytesIO(resp.read()))
+            finally:
+                resp.close(); resp.release_conn()
+        except Exception:
+            df = None
+    else:
+        import glob
+        files = glob.glob(f"{args.data}/topology/*.parquet")
+        if files:
+            df = pd.read_parquet(files[0])
+    if df is not None and not df.empty:
+        n = ingest.load_topology(catalog, df, args.namespace)
+        print(f"    topology: overwrote {n} edges")
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     cfg = load_config(args.config)
@@ -61,6 +87,9 @@ def main(argv=None) -> int:
     catalog = ingest.iceberg_catalog(cfg, insecure=args.insecure)
     tables = ingest.ensure_tables(catalog, args.namespace)
     print(f"    namespace {args.namespace}: tables {', '.join(tables)}")
+
+    # Static topology dimension (M5): load/overwrite once if present.
+    _load_topology(args, cfg, catalog)
 
     source, manifest, where = _build_source_and_manifest(args, cfg)
     print(f"==> ingesting from {where} (manifest has {manifest.count} processed)")

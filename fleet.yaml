@@ -9,6 +9,17 @@ sites:
   - dc-east
   - dc-west
 
+# App-level dependency edges (M5): "app depends_on the listed apps". Drives the
+# topology table and the blast-radius graph traversal. Reflects the chains
+# patient-onboarding -> ehr-api -> postgres-db and hl7-ingest -> kafka -> ehr-api.
+topology:
+  patient-onboarding: [ehr-api]
+  ehr-api: [postgres-db]
+  hl7-ingest: [kafka]
+  kafka: [ehr-api]
+  billing-svc: [postgres-db]
+  scheduler-svc: [ehr-api]
+
 # All nine numeric metrics from the vm_metrics data contract must be present
 # in every app baseline. Units: cpu_pct %, heap_mb MB, gc_pause_ms ms,
 # disk_io_await_ms ms, disk_iops iops, net_mbps Mbps, net_retrans_pct %,

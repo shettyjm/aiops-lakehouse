@@ -1,0 +1,19 @@
+# Optional (M5, Option B): PuppyGraph reading the SAME AIStor Iceberg tables via
+# the REST catalog, for Cypher graph traversal — the customer-story-faithful
+# layer. The main demo does NOT depend on this; the default blast-radius path is
+# the copilot's trace_dependencies tool (DuckDB recursive CTEs). See
+# docs/puppygraph.md. Exact env keys vary by PuppyGraph version — verify against
+# the PuppyGraph docs.
+services:
+  puppygraph:
+    image: puppygraph/puppygraph:latest
+    ports:
+      - "8081:8081"     # web UI
+      - "8182:8182"     # Gremlin
+      - "7687:7687"     # Bolt / Cypher
+    environment:
+      - PUPPYGRAPH_USERNAME=puppygraph
+      - PUPPYGRAPH_PASSWORD=puppygraph123
+    # Mount the schema that maps the Iceberg tables to a graph (see schema.json).
+    volumes:
+      - ./schema.json:/etc/puppygraph/schema.json:ro

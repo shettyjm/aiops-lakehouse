@@ -139,7 +139,9 @@ def main(argv=None) -> int:
     if not args.stream:
         gen.write_dataset(result.metrics, args.out, "vm_metrics")
         gen.write_dataset(result.events, args.out, "app_events")
-        print(f"==> wrote parquet under {Path(args.out)}/vm_metrics and /app_events")
+        gen.write_flat(result.topology, args.out, "topology")
+        print(f"==> wrote parquet under {Path(args.out)}/vm_metrics, /app_events, "
+              f"/topology ({len(result.topology)} edges)")
         return 0
 
     # --- stream mode ---------------------------------------------------------
@@ -150,6 +152,16 @@ def main(argv=None) -> int:
         print(f"==> streaming with upload -> s3://{bucket}/")
     else:
         print("==> streaming (local write only; pass --upload to ship to AIStor)")
+
+    # Topology is a static dimension — write/upload it once, not per chunk.
+    if not result.topology.empty:
+        if args.upload:
+            body = _parquet_bytes(result.topology)
+            client.put_object(bucket, "topology/topology.parquet", io.BytesIO(body),
+                              length=len(body), content_type="application/vnd.apache.parquet")
+            print(f"    topology: {len(result.topology)} edges -> s3://{bucket}/topology/topology.parquet")
+        else:
+            gen.write_flat(result.topology, args.out, "topology")
 
     samples_per_chunk = max(int(round(args.chunk_min * 60 / interval_s)), 1)
     chunk_idx = 0

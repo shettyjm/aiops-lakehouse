@@ -73,6 +73,11 @@ class DetectConfig:
 _DUCK_TYPE = {"timestamp": "TIMESTAMP", "string": "VARCHAR", "float": "FLOAT"}
 
 
+def _register_empty(con, name, fields):
+    cols = ", ".join(f"{n} {_DUCK_TYPE[t]}" for n, t in fields)
+    con.execute(f"CREATE TABLE {name} ({cols})")
+
+
 def duckdb_from_local(data_dir: str):
     import glob
     import duckdb
@@ -84,8 +89,13 @@ def duckdb_from_local(data_dir: str):
                         f"SELECT * FROM read_parquet({files!r}, union_by_name=true)")
         else:
             # Empty (e.g. a healthy fleet emits no events) -> typed empty table.
-            cols = ", ".join(f"{n} {_DUCK_TYPE[t]}" for n, t in fields)
-            con.execute(f"CREATE TABLE {tbl} ({cols})")
+            _register_empty(con, tbl, fields)
+    # Static topology dimension (may be absent).
+    topo = sorted(glob.glob(f"{data_dir}/topology/*.parquet"))
+    if topo:
+        con.execute(f"CREATE VIEW topology AS SELECT * FROM read_parquet({topo!r})")
+    else:
+        _register_empty(con, "topology", ingest.TOPOLOGY_FIELDS)
     return con
 
 
@@ -95,8 +105,13 @@ def duckdb_from_iceberg(cfg, namespace: str, insecure: bool = False):
     con = duckdb.connect()
     for tbl in ("vm_metrics", "app_events"):
         table = catalog.load_table((namespace, tbl))
-        arrow = table.scan().to_arrow()
-        con.register(tbl, arrow)
+        con.register(tbl, table.scan().to_arrow())
+    # Static topology dimension (may not exist in older lakes).
+    try:
+        topo = catalog.load_table((namespace, "topology"))
+        con.register("topology", topo.scan().to_arrow())
+    except Exception:
+        _register_empty(con, "topology", ingest.TOPOLOGY_FIELDS)
     return con
 
 
