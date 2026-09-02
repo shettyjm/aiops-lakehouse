@@ -27,10 +27,12 @@ backend = ollama
 #   ollama (in-cluster): http://ollama.aiops.svc.cluster.local:11434/v1
 #   openshift_ai:        https://<vllm-route>/v1
 base_url = http://ollama.aiops.svc.cluster.local:11434/v1
-# model_name: light Granite MoE (3B) is fast on CPU for the demo.
-#   heavier/better: granite3.1-dense:8b, qwen2.5:7b-instruct
-#   even lighter:   granite3.1-moe:1b, granite3.1-dense:2b, qwen2.5:3b-instruct
-model_name = granite3.1-moe:3b
+# model_name: pick per demo. qwen2.5:3b-instruct actually DRIVES the tools
+#   (model queries the lake itself -> fuller agentic story). granite3.1-moe:3b
+#   is on-brand (IBM/Red Hat) but weak at tool-calling, so it uses the
+#   summarise-real-rows fallback. Either is grounded; neither invents numbers.
+#   heavier: granite3.1-dense:8b, qwen2.5:7b-instruct
+model_name = qwen2.5:3b-instruct
 # api_key: required for claude backend (ANTHROPIC_API_KEY); optional otherwise.
 api_key =
 

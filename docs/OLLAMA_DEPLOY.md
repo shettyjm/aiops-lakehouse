@@ -55,10 +55,18 @@ oc get pods -l app=ollama
 Pull a model into the pod (persists on the PVC):
 
 ```bash
-oc exec deploy/ollama -- ollama pull granite3.1-moe:3b   # ~2 GB, fast on CPU (demo default)
-# heavier: granite3.1-dense:8b, qwen2.5:7b-instruct
+oc exec deploy/ollama -- ollama pull qwen2.5:3b-instruct   # ~2 GB, drives the tools well
+oc exec deploy/ollama -- ollama pull granite3.1-moe:3b     # on-brand (IBM/Red Hat)
 oc exec deploy/ollama -- ollama list
 ```
+
+**Which small model?** `qwen2.5:3b-instruct` reliably calls the `run_sql` /
+`get_alerts` tools, so the copilot shows the full agentic loop (the model queries
+the lake itself). `granite3.1-moe:3b` is the on-brand IBM/Red Hat model but is
+weak at tool-calling on CPU, so the copilot uses its **summarise-real-rows**
+fallback (fetch the rows, model narrates them). Both are grounded — neither
+invents numbers. You can pull both and switch `model_name` per demo. Ollama only
+loads a model into RAM when it's used, so keeping several costs only PVC disk.
 
 ---
 
