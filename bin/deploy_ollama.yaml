@@ -1,19 +1,31 @@
-# Sovereign local model serving for the copilot (M4).
-# Deploys Ollama on the OpenShift SNO cluster (CPU-only), exposes an
-# OpenAI-compatible API at /v1, and persists pulled models on a PVC.
+# Sovereign local model serving for the copilot (M4), hardened for OpenShift's
+# default restricted-v2 SCC (runs as a random non-root UID).
+#
+# Why the tweaks vs a vanilla Ollama deploy:
+#  - The stock ollama image writes to /root/.ollama, but a random UID can't
+#    traverse /root (mode 700). We mount the model PVC at /models and set
+#    HOME=/models so Ollama writes there instead.
+#  - We DON'T pin runAsUser/fsGroup — OpenShift injects them from the namespace
+#    range; the injected fsGroup makes the PVC group-writable by the container.
+#  - restricted-v2 requires: allowPrivilegeEscalation:false, drop ALL caps,
+#    runAsNonRoot:true, seccompProfile RuntimeDefault.
 #
 # Apply:
-#   oc new-project aiops        # or: oc project aiops
+#   oc new-project aiops
 #   oc apply -f bin/deploy_ollama.yaml
+#   oc rollout status deploy/ollama
 #
-# Pull the model once the pod is Running (granite is small enough for CPU/SNO):
-#   oc exec deploy/ollama -- ollama pull granite3-dense:8b
-#   # or: qwen2.5:7b-instruct
+# Pull the model (small enough for CPU/SNO):
+#   oc exec deploy/ollama -- ollama pull granite3-dense:8b   # or qwen2.5:7b-instruct
 #
 # Point config.ini [model] at the in-cluster service:
-#   base_url = http://ollama.aiops.svc.cluster.local:11434/v1
+#   base_url   = http://ollama.aiops.svc.cluster.local:11434/v1
 #   model_name = granite3-dense:8b
-# (or use the external Route host below with https + /v1)
+#
+# If docker.io is blocked or rate-limited on your cluster, mirror the image
+# first and change `image:` below to your internal registry, e.g.:
+#   oc image mirror docker.io/ollama/ollama:latest \
+#       image-registry.openshift-image-registry.svc:5000/aiops/ollama:latest
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -25,6 +37,7 @@ spec:
   resources:
     requests:
       storage: 20Gi
+  # storageClassName: gp3-csi   # uncomment/set if there is no default StorageClass
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -39,6 +52,10 @@ spec:
     metadata:
       labels: {app: ollama}
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: ollama
           image: docker.io/ollama/ollama:latest
@@ -49,20 +66,34 @@ spec:
               value: "0.0.0.0"
             - name: OLLAMA_KEEP_ALIVE
               value: "24h"
+            - name: HOME              # random UID can't use /root; write to the PVC
+              value: /models
+            - name: OLLAMA_MODELS
+              value: /models/.ollama/models
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "2"
               memory: 8Gi
+              ephemeral-storage: 2Gi
             limits:
               cpu: "6"
               memory: 12Gi
+              ephemeral-storage: 4Gi
           volumeMounts:
             - name: models
-              mountPath: /root/.ollama
+              mountPath: /models
           readinessProbe:
             httpGet: {path: /api/tags, port: 11434}
             initialDelaySeconds: 5
             periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /api/tags, port: 11434}
+            initialDelaySeconds: 20
+            periodSeconds: 30
       volumes:
         - name: models
           persistentVolumeClaim:
