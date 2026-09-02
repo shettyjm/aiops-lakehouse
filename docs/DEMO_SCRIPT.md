@@ -161,6 +161,43 @@ augment when policy allows."
 
 ---
 
+## 6b. Blast radius — the topology graph (optional, +1:00)
+
+**SAY (from symptom to root cause):** "The copilot also knows the *service graph*.
+So it can answer the question every incident bridge asks: what's the blast radius?"
+
+```bash
+make chat ARGS='"what happens if postgres-db goes down?" --backend ollama --show-tools'
+```
+**SHOW:** the model calling **`· tool trace_dependencies(...)`**, then the impact
+tree with depths and each hop's live alerts:
+```
+depth 1: ehr-api, billing-svc
+depth 2: patient-onboarding  ALERTS: P1:heap_leak
+depth 3: hl7-ingest
+```
+**SAY:** "postgres-db failing ripples through ehr-api to patient-onboarding — and
+that hop is *already* showing a P1. The graph ties a root-cause dependency to the
+user-facing service, with real alert state on every node."
+
+Reverse it — connect a slow service back to its failing dependency:
+```bash
+make chat ARGS='"what does patient-onboarding depend on?" --backend none'
+```
+**SHOW:** upstream → ehr-api → **postgres-db (P2:io_spike)**. **SAY:** "Same graph,
+other direction: onboarding is slow because the database it depends on two hops
+down is saturating."
+
+**SAY (architecture):** "This is the customer-story graph layer — traversal over
+the *same* Iceberg tables, no separate graph database. Recursive SQL by default;
+`docs/puppygraph.md` shows the same queries in Cypher via PuppyGraph if you want
+a dedicated engine."
+
+*(Instant/offline variant for a guaranteed-fast answer on stage: swap
+`--backend ollama` for `--backend none`.)*
+
+---
+
 ## 7. Close (0:30)
 
 **SAY:** "Cheap governed storage, deterministic prediction with 45 minutes of lead
@@ -181,8 +218,9 @@ downstream changes. That's when 'demo' becomes 'production'."
 | 4 | Replay (money shot) | `make replay SOURCE=iceberg` | 3:00 |
 | 5 | Dashboard | `make dashboard SOURCE=iceberg` | 2:00 |
 | 6 | Copilot (sovereign) | `make chat ARGS='... --backend ollama --show-tools'` | 2:30 |
+| 6b | Blast radius (optional) | `make chat ARGS='"what happens if postgres-db goes down?" ...'` | +1:00 |
 | 7 | Close | — | 0:30 |
-| | **Total** | | **~11:30** |
+| | **Total** | | **~11:30** (12:30 with 6b) |
 
 ---
 
