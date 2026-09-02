@@ -40,5 +40,8 @@ replay: ## Heap-leak early-warning replay timeline (M3 money-shot)
 chat: ## Ask the SRE copilot a question (M4)
 	$(PYTHON) bin/05_copilot.py --source $(SOURCE) $(ARGS)
 
+dashboard: ## Launch the read-only Streamlit dashboard (M6). SOURCE=iceberg|local
+	$(PYTHON) -m streamlit run bin/dashboard.py -- --source $(SOURCE)
+
 test: ## Run the test suite
 	$(PYTHON) -m pytest -q

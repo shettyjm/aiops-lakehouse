@@ -8,4 +8,5 @@ minio>=7.2
 pyyaml>=6.0
 openai>=1.30          # OpenAI-compatible client for ollama / OpenShift AI
 anthropic>=0.40       # optional: --backend claude
+streamlit>=1.40       # read-only dashboard (bin/dashboard.py)
 pytest>=8.0
