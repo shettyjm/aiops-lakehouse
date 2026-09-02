@@ -138,6 +138,38 @@ Build aiops/generator.py + bin/02_generate.py. Requirements:
 leaking VM's heap ramp; `--stream` uploads chunks to the raw bucket visible in the
 AIStor console.
 
+### M1b — Multi-site extension: 25 globally distributed sites (customer variant)
+
+**Context:** the target operator runs ~25 sites worldwide (≈2,000 VMs), each of a
+*type* — `manufacturing | warehouse | sales_office | customer_club` — across
+regions (NA/EMEA/DACH/APAC/LATAM). This makes the fleet visibly global and
+multi-jurisdiction. Implemented on branch `feature/25-site-fleet` (main stays at
+tag `phase1-checkpoint`).
+
+**Design (additive, non-breaking):**
+- `fleet.yaml` `sites:` become `{name, type, region}` maps (plain strings still
+  work → type/region `unknown`); `type_profiles:` apply per-type baseline
+  multipliers (warehouse io/heap burst; manufacturing steady; etc.).
+- The `(site → location_type, region)` mapping is a separate **`sites` dimension
+  table** (unpartitioned Iceberg, overwrite) — so `vm_metrics`/`app_events` keep
+  their contract and the **detectors are unchanged**. Slice by location by JOINing
+  on `site`.
+- Incident scenarios can target by `location_type`/`region`/`site` (e.g. a
+  warehouse heap leak), not only by `app`.
+- The copilot's `get_alerts` is enriched with site/type/region, and a
+  deterministic "which regions/location-types are most at risk?" rollup is added.
+
+**Optional retail re-theme (not done, to protect the checkpoint's tests):** for a
+SAP/e-commerce-coherent narrative, rename the healthcare apps —
+`ehr-api → erp-api`, `patient-onboarding → order-checkout`,
+`hl7-ingest → edi-ingest` — leaving the neutral ones (postgres-db, kafka,
+billing-svc, scheduler-svc, generic-worker) as is.
+
+**Demo beats it unlocks:** a warehouse VM's heap leak caught 45 min early; the
+copilot answering *"which locations are at risk right now?"* across the fleet;
+and a residency/governance line — *EU-site telemetry stays in-region; only masked
+aggregates cross borders* (ties into the commerce demo's governance plane).
+
 ## M2 — Continuous Iceberg ingestion (2–3 h)
 
 **Goal**: raw Parquet → governed AIStor Tables, append-only, snapshot per batch.
