@@ -32,9 +32,15 @@ Tables (DuckDB, read-only):
              disk_io_await_ms, disk_iops, net_mbps, net_retrans_pct,
              app_latency_ms, error_rate_pct)
   app_events(ts, vm_id, app, site, level, event_type, message)
+  sites(site, location_type, region)   -- JOIN vm_metrics.site = sites.site to
+       slice by location_type (manufacturing/warehouse/sales_office/customer_club)
+       or region (NA/EMEA/DACH/APAC/LATAM). ~25 sites worldwide.
+  topology(vm_id, app, site, depends_on_app)   -- app dependency edges
 Apps: patient-onboarding, ehr-api, scheduler-svc, billing-svc, hl7-ingest,
-      postgres-db, kafka, generic-worker. Sites: dc-east, dc-west.
-Samples are every 30s. heap_mb approaches a ~4096 MB cap before an OOM."""
+      postgres-db, kafka, generic-worker.
+Samples are every 30s. heap_mb approaches a ~4096 MB cap before an OOM.
+For "which locations/regions are at risk", join get_alerts' vm_ids or vm_metrics
+to sites and group by location_type / region."""
 
 SYSTEM_PROMPT = f"""You are an SRE copilot for a healthcare EHR SaaS running on a \
 MinIO AIStor + OpenShift lakehouse. You help on-call engineers triage fleet \
@@ -87,7 +93,8 @@ class LakeTools:
 
     def get_alerts(self, severity: str | None = None, app: str | None = None,
                    asof_min: float = 0.0) -> str:
-        """Return current alerts (from the M3 detector), optionally filtered."""
+        """Return current alerts (from the M3 detector), enriched with each VM's
+        site/location_type/region so location questions are answerable."""
         alerts = detect.detect(self.con, self.dc, asof_min=asof_min)
         if severity:
             alerts = alerts[alerts["severity"] == severity.upper()]
@@ -95,8 +102,17 @@ class LakeTools:
             alerts = alerts[alerts["app"] == app]
         if alerts.empty:
             return "no active alerts"
-        cols = ["severity", "rule", "vm_id", "app", "headline"]
-        return f"{len(alerts)} alert(s)\n{alerts[cols].to_string(index=False)}"
+        try:  # enrich with location if the sites dimension is available
+            loc = self.con.execute("""
+                SELECT DISTINCT m.vm_id, m.site, s.location_type, s.region
+                FROM vm_metrics m LEFT JOIN sites s ON m.site = s.site""").fetch_df()
+            alerts = alerts.merge(loc, on="vm_id", how="left")
+        except Exception:
+            pass
+        cols = [c for c in ["severity", "rule", "vm_id", "app", "site",
+                            "location_type", "region", "headline"]
+                if c in alerts.columns]
+        return f"{len(alerts)} alert(s)\n{alerts[cols].fillna('').to_string(index=False)}"
 
     def trace_dependencies(self, app: str, asof_min: float = 0.0) -> str:
         """Blast-radius traversal over the topology graph (recursive CTEs):
@@ -285,11 +301,53 @@ def _blast_narrative(question: str, tools: LakeTools, asof_min: float) -> str:
             f"user-facing symptoms upstream.")
 
 
+_LOCATION_HINTS = ("location", "region", "site", "worldwide", "globally",
+                   "geograph", "by type", "which countries", "warehouse",
+                   "manufacturing", "customer_club", "sales office", "sales_office")
+
+
+def is_location_question(question: str) -> bool:
+    q = question.lower()
+    return any(h in q for h in _LOCATION_HINTS)
+
+
+def _location_narrative(question: str, tools: LakeTools, asof_min: float) -> str:
+    """Deterministic 'which locations are at risk' — alerts grouped by region /
+    location_type via the sites dimension."""
+    alerts = detect.detect(tools.con, tools.dc, asof_min=asof_min)
+    if alerts.empty:
+        return "No active alerts across any site right now."
+    tools.con.register("_al", alerts)
+    try:
+        df = tools.con.execute("""
+            WITH v AS (SELECT DISTINCT vm_id, site FROM vm_metrics)
+            SELECT s.region, s.location_type,
+                   sum(CASE WHEN _al.severity='P1' THEN 1 ELSE 0 END) AS p1,
+                   count(*) AS total
+            FROM _al JOIN v ON _al.vm_id = v.vm_id JOIN sites s ON v.site = s.site
+            GROUP BY s.region, s.location_type
+            ORDER BY p1 DESC, total DESC""").fetch_df()
+    finally:
+        tools.con.unregister("_al")
+    if df.empty:   # no sites dimension / no vm-level alerts -> fall back to RCA
+        return _narrative(_gather(question, tools, asof_min), tools.dc)
+    lines = ["## Fleet risk by location", ""]
+    for r in df.itertuples(index=False):
+        lines.append(f"- **{r.region} / {r.location_type}**: "
+                     f"{int(r.p1)} P1, {int(r.total)} active alert(s)")
+    top = df.iloc[0]
+    lines += ["", f"**Most at risk:** {top.region} {top.location_type} "
+              f"({int(top.p1)} P1). Prioritise those sites."]
+    return "\n".join(lines)
+
+
 def deterministic_answer(question: str, tools: LakeTools, asof_min: float = 0.0) -> str:
     """A grounded answer built purely from SQL — no model required. Routes
-    blast-radius questions to the topology trace, others to the metrics RCA."""
+    blast-radius -> topology, location -> sites rollup, else -> metrics RCA."""
     if is_blast_question(question):
         return _blast_narrative(question, tools, asof_min)
+    if is_location_question(question):
+        return _location_narrative(question, tools, asof_min)
     return _narrative(_gather(question, tools, asof_min), tools.dc)
 
 
@@ -469,11 +527,11 @@ def answer(question: str, tools: LakeTools, cfg, backend: str,
         # aren't trustworthy (small models hallucinate). Fetch the real rows and
         # have it SUMMARISE those instead; if that fails, use the SQL narrative.
         if not res.tool_calls:
-            # Blast-radius questions -> deterministic topology trace directly.
-            if is_blast_question(question):
+            # Blast-radius / location questions -> deterministic path directly.
+            if is_blast_question(question) or is_location_question(question):
                 return AgentResult(
-                    text=_blast_narrative(question, tools, asof_min) +
-                         "\n\n_(model didn't query the lake; deterministic graph result.)_",
+                    text=deterministic_answer(question, tools, asof_min) +
+                         "\n\n_(model didn't query the lake; deterministic result.)_",
                     backend=backend, used_fallback=True)
             # Otherwise fetch real rows and have the model summarise those.
             g = _gather(question, tools, asof_min)

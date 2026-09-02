@@ -9,7 +9,13 @@
              disk_iops, net_mbps, net_retrans_pct, app_latency_ms, error_rate_pct)
   app_events(ts, vm_id, app, site, level, event_type, message)
   topology(vm_id, app, site, depends_on_app)      -- added in M5
+  sites(site, location_type, region)              -- 25-site dim; JOIN on site.
+      location_type: manufacturing|warehouse|sales_office|customer_club
   alerts(ts, severity, rule, vm_id, app, headline, evidence_json, action)
+- vm_metrics/app_events keep their columns; site slicing is via the sites dim
+  (a JOIN), so detectors are unchanged. Sites are {name, type, region} in
+  fleet.yaml; per-type baseline multipliers live in fleet.yaml type_profiles.
+  Scenarios may target by app and/or location_type/region/site.
 - Libraries: pandas/pyarrow, duckdb, pyiceberg, minio, anthropic (optional), openai
   (for the OpenAI-compatible local model endpoint). No Spark, no Kafka in Phase 1.
 - Tests: `pytest -q` must pass before every commit; each milestone adds its own tests.

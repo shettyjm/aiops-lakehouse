@@ -43,9 +43,11 @@ _APP_EVENTS_FIELDS = [
 
 TABLE_FIELDS = {"vm_metrics": _VM_METRICS_FIELDS, "app_events": _APP_EVENTS_FIELDS}
 
-# Static dimension (M5): no ts, so unpartitioned and overwritten (not appended).
+# Static dimensions (M5 topology, 25-site sites): no ts, so unpartitioned and
+# overwritten (not appended).
 TOPOLOGY_FIELDS = [("vm_id", "string"), ("app", "string"), ("site", "string"),
                    ("depends_on_app", "string")]
+SITES_FIELDS = [("site", "string"), ("location_type", "string"), ("region", "string")]
 
 
 def iceberg_schema(fields):
@@ -80,16 +82,24 @@ def ensure_table(catalog, namespace: str, name: str, fields,
     return catalog.load_table(ident)
 
 
-def load_topology(catalog, df, namespace: str = NAMESPACE_DEFAULT) -> int:
-    """Overwrite the static topology table with df (it's a dimension, not a
-    stream). Returns the row count written."""
+def load_dimension(catalog, name: str, df, fields,
+                   namespace: str = NAMESPACE_DEFAULT) -> int:
+    """Overwrite a static dimension table (topology, sites) with df — it's a
+    dimension, not a stream. Returns the row count written."""
     import pyarrow as pa
-    table = ensure_table(catalog, namespace, "topology", TOPOLOGY_FIELDS,
-                         partitioned=False)
-    arrow = pa.Table.from_pandas(df[[f[0] for f in TOPOLOGY_FIELDS]],
+    table = ensure_table(catalog, namespace, name, fields, partitioned=False)
+    arrow = pa.Table.from_pandas(df[[f[0] for f in fields]],
                                  schema=table.schema().as_arrow(), preserve_index=False)
     table.overwrite(arrow)
     return len(df)
+
+
+def load_topology(catalog, df, namespace: str = NAMESPACE_DEFAULT) -> int:
+    return load_dimension(catalog, "topology", df, TOPOLOGY_FIELDS, namespace)
+
+
+def load_sites(catalog, df, namespace: str = NAMESPACE_DEFAULT) -> int:
+    return load_dimension(catalog, "sites", df, SITES_FIELDS, namespace)
 
 
 # --------------------------------------------------------------------------- #

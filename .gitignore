@@ -5,6 +5,7 @@ config.ini
 data/vm_metrics/
 data/app_events/
 data/topology/
+data/sites/
 data/alerts.json
 data/*.parquet
 

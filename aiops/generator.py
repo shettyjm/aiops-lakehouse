@@ -47,6 +47,7 @@ _NOISE_FLOOR = {
 
 EVENT_COLUMNS = ["ts", "vm_id", "app", "site", "level", "event_type", "message"]
 TOPOLOGY_COLUMNS = ["vm_id", "app", "site", "depends_on_app"]
+SITES_COLUMNS = ["site", "location_type", "region"]
 
 
 # --------------------------------------------------------------------------- #
@@ -101,9 +102,11 @@ def load_scenarios(path: str | Path | None) -> list[dict]:
 # --------------------------------------------------------------------------- #
 @dataclasses.dataclass
 class Fleet:
-    vm_id: np.ndarray      # (n_vms,) str
-    app: np.ndarray        # (n_vms,) str
-    site: np.ndarray       # (n_vms,) str
+    vm_id: np.ndarray       # (n_vms,) str
+    app: np.ndarray         # (n_vms,) str
+    site: np.ndarray        # (n_vms,) str  (site name)
+    site_type: np.ndarray   # (n_vms,) str  (location_type)
+    region: np.ndarray      # (n_vms,) str
     app_rows: dict[str, np.ndarray]   # app -> row indices into the arrays
 
     @property
@@ -111,13 +114,28 @@ class Fleet:
         return self.vm_id.shape[0]
 
 
+def normalize_sites(sites) -> list[dict]:
+    """Accept plain strings (legacy) or {name, type, region} maps -> list of maps."""
+    out = []
+    for s in sites:
+        if isinstance(s, str):
+            out.append({"name": s, "type": "unknown", "region": "unknown"})
+        else:
+            out.append({"name": s["name"], "type": s.get("type", "unknown"),
+                        "region": s.get("region", "unknown")})
+    return out
+
+
 def build_fleet(fleet_spec: dict) -> Fleet:
     """Materialise VM identities. VMs are grouped contiguously by app so that
-    baseline fills and per-app incident targeting are simple array slices."""
-    sites = list(fleet_spec["sites"])
+    baseline fills and per-app incident targeting are simple array slices; each
+    VM is round-robin-assigned a site (with its type + region)."""
+    sites = normalize_sites(fleet_spec["sites"])
     vm_ids: list[str] = []
     apps: list[str] = []
     site_of: list[str] = []
+    type_of: list[str] = []
+    region_of: list[str] = []
     app_rows: dict[str, np.ndarray] = {}
 
     cursor = 0
@@ -128,15 +146,27 @@ def build_fleet(fleet_spec: dict) -> Fleet:
         for i in range(count):
             vm_ids.append(f"{app_name}-{i:04d}")
             apps.append(app_name)
-            site_of.append(sites[i % len(sites)])   # round-robin ~50/50 split
+            s = sites[(cursor + i) % len(sites)]    # global round-robin -> even spread
+            site_of.append(s["name"])
+            type_of.append(s["type"])
+            region_of.append(s["region"])
         cursor += count
 
     return Fleet(
         vm_id=np.array(vm_ids),
         app=np.array(apps),
         site=np.array(site_of),
+        site_type=np.array(type_of),
+        region=np.array(region_of),
         app_rows=app_rows,
     )
+
+
+def build_sites_dim(fleet: Fleet) -> pd.DataFrame:
+    """Distinct (site, location_type, region) dimension table (static, no ts)."""
+    df = pd.DataFrame({"site": fleet.site, "location_type": fleet.site_type,
+                       "region": fleet.region})
+    return df.drop_duplicates().reset_index(drop=True)[SITES_COLUMNS]
 
 
 # --------------------------------------------------------------------------- #
@@ -149,6 +179,7 @@ class GenResult:
     incident_vms: dict[str, list[str]]   # scenario name -> vm_ids hit
     ts: np.ndarray                 # (n_samples,) datetime64[ns] sample grid
     topology: pd.DataFrame = dataclasses.field(default_factory=pd.DataFrame)
+    sites: pd.DataFrame = dataclasses.field(default_factory=pd.DataFrame)
 
 
 def build_topology(fleet: Fleet, fleet_spec: dict) -> pd.DataFrame:
@@ -171,6 +202,13 @@ def _baseline_matrix(fleet: Fleet, fleet_spec: dict, n_samples: int,
     noise_pct = float(fleet_spec["noise_pct"])
     mats = {m: np.empty((n, n_samples), dtype=np.float64) for m in METRICS}
 
+    _fill_app_baselines(fleet, fleet_spec, mats, noise_pct, rng)
+    _apply_type_profiles(fleet, fleet_spec, mats)
+    return mats
+
+
+def _fill_app_baselines(fleet, fleet_spec, mats, noise_pct, rng):
+    n_samples = mats[METRICS[0]].shape[1]
     for app_name, rows in fleet.app_rows.items():
         base = fleet_spec["apps"][app_name]["baseline"]
         r0, r1 = rows[0], rows[-1] + 1
@@ -182,6 +220,19 @@ def _baseline_matrix(fleet: Fleet, fleet_spec: dict, n_samples: int,
     return mats
 
 
+def _apply_type_profiles(fleet: Fleet, fleet_spec: dict, mats: dict) -> None:
+    """Scale each VM's baseline metrics by its site-type multipliers, in place,
+    so location types (warehouse burst, manufacturing steady, ...) differ.
+    No-op when there are no type_profiles (legacy flat-site fleets)."""
+    profiles = fleet_spec.get("type_profiles", {}) or {}
+    if not profiles:
+        return
+    for m in METRICS:
+        mult = np.array([profiles.get(t, {}).get(m, 1.0) for t in fleet.site_type])
+        if not np.allclose(mult, 1.0):
+            mats[m] *= mult[:, None]
+
+
 def _window_mask(n_samples: int, interval_s: int, start_min: float,
                  end_min: float) -> np.ndarray:
     """Boolean (n_samples,) mask for columns inside [start_min, end_min)."""
@@ -190,14 +241,18 @@ def _window_mask(n_samples: int, interval_s: int, start_min: float,
 
 
 def _target_rows(fleet: Fleet, scen: dict, rng: np.random.Generator) -> np.ndarray:
-    """Resolve a scenario's target VM row indices."""
+    """Resolve a scenario's target VM row indices. Filter by app (optional) and
+    any of site / location_type / region, then take the first `count`."""
     if scen.get("vms"):
         wanted = set(scen["vms"])
         return np.array([i for i, v in enumerate(fleet.vm_id) if v in wanted])
-    app = scen["app"]
-    rows = fleet.app_rows[app]
+    rows = fleet.app_rows[scen["app"]] if scen.get("app") else np.arange(fleet.n_vms)
     if scen.get("site"):
         rows = rows[fleet.site[rows] == scen["site"]]
+    if scen.get("location_type"):
+        rows = rows[fleet.site_type[rows] == scen["location_type"]]
+    if scen.get("region"):
+        rows = rows[fleet.region[rows] == scen["region"]]
     count = int(scen.get("count", 1))
     return rows[:count]   # deterministic first-N
 
@@ -353,7 +408,8 @@ def generate(fleet_spec: dict, scenarios: list[dict], start: datetime,
 
     return GenResult(metrics=metrics_df, events=events_df,
                      incident_vms=incident_vms, ts=ts,
-                     topology=build_topology(fleet, fleet_spec))
+                     topology=build_topology(fleet, fleet_spec),
+                     sites=build_sites_dim(fleet))
 
 
 def _as_naive_utc(dt: datetime) -> datetime:

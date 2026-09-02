@@ -53,30 +53,33 @@ def _build_source_and_manifest(args, cfg):
     return source, ingest.ProcessedManifest(store), where
 
 
-def _load_topology(args, cfg, catalog) -> None:
-    """Read the topology parquet from s3/local (if present) and overwrite the
-    Iceberg topology table."""
+def _read_dimension(args, cfg, name):
+    """Read a static dimension parquet (topology/sites) from s3 or local."""
     import io
     import pandas as pd
-    df = None
     if args.source == "s3":
         client, bucket = ingest.minio_client(cfg, args.insecure)
         try:
-            resp = client.get_object(bucket, "topology/topology.parquet")
+            resp = client.get_object(bucket, f"{name}/{name}.parquet")
             try:
-                df = pd.read_parquet(io.BytesIO(resp.read()))
+                return pd.read_parquet(io.BytesIO(resp.read()))
             finally:
                 resp.close(); resp.release_conn()
         except Exception:
-            df = None
-    else:
-        import glob
-        files = glob.glob(f"{args.data}/topology/*.parquet")
-        if files:
-            df = pd.read_parquet(files[0])
-    if df is not None and not df.empty:
-        n = ingest.load_topology(catalog, df, args.namespace)
-        print(f"    topology: overwrote {n} edges")
+            return None
+    import glob
+    files = glob.glob(f"{args.data}/{name}/*.parquet")
+    return pd.read_parquet(files[0]) if files else None
+
+
+def _load_dimensions(args, cfg, catalog) -> None:
+    """Load/overwrite the static topology + sites dimensions if present."""
+    for name, loader in (("topology", ingest.load_topology),
+                         ("sites", ingest.load_sites)):
+        df = _read_dimension(args, cfg, name)
+        if df is not None and not df.empty:
+            n = loader(catalog, df, args.namespace)
+            print(f"    {name}: overwrote {n} rows")
 
 
 def main(argv=None) -> int:
@@ -88,8 +91,8 @@ def main(argv=None) -> int:
     tables = ingest.ensure_tables(catalog, args.namespace)
     print(f"    namespace {args.namespace}: tables {', '.join(tables)}")
 
-    # Static topology dimension (M5): load/overwrite once if present.
-    _load_topology(args, cfg, catalog)
+    # Static dimensions (topology, sites): load/overwrite once if present.
+    _load_dimensions(args, cfg, catalog)
 
     source, manifest, where = _build_source_and_manifest(args, cfg)
     print(f"==> ingesting from {where} (manifest has {manifest.count} processed)")

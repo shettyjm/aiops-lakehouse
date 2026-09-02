@@ -62,3 +62,16 @@ scenarios:
     end_min: 110
     params:
       cpu_steal_pct: 35.0
+
+  # Location-targeted (25-site fleets): a heap leak on WAREHOUSE VMs — WMS/
+  # fulfillment nodes under shipping-window pressure. Targets by location_type
+  # (any app) rather than by app, to show multi-site incident targeting.
+  - name: warehouse-peak-heap-leak
+    template: heap_leak
+    location_type: warehouse
+    count: 2
+    start_min: 20
+    end_min: 120
+    params:
+      leak_mb_per_min: 21
+      heap_cap_mb: 4096

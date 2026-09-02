@@ -90,12 +90,14 @@ def duckdb_from_local(data_dir: str):
         else:
             # Empty (e.g. a healthy fleet emits no events) -> typed empty table.
             _register_empty(con, tbl, fields)
-    # Static topology dimension (may be absent).
-    topo = sorted(glob.glob(f"{data_dir}/topology/*.parquet"))
-    if topo:
-        con.execute(f"CREATE VIEW topology AS SELECT * FROM read_parquet({topo!r})")
-    else:
-        _register_empty(con, "topology", ingest.TOPOLOGY_FIELDS)
+    # Static dimensions (may be absent).
+    for name, fields in (("topology", ingest.TOPOLOGY_FIELDS),
+                         ("sites", ingest.SITES_FIELDS)):
+        files = sorted(glob.glob(f"{data_dir}/{name}/*.parquet"))
+        if files:
+            con.execute(f"CREATE VIEW {name} AS SELECT * FROM read_parquet({files!r})")
+        else:
+            _register_empty(con, name, fields)
     return con
 
 
@@ -106,12 +108,13 @@ def duckdb_from_iceberg(cfg, namespace: str, insecure: bool = False):
     for tbl in ("vm_metrics", "app_events"):
         table = catalog.load_table((namespace, tbl))
         con.register(tbl, table.scan().to_arrow())
-    # Static topology dimension (may not exist in older lakes).
-    try:
-        topo = catalog.load_table((namespace, "topology"))
-        con.register("topology", topo.scan().to_arrow())
-    except Exception:
-        _register_empty(con, "topology", ingest.TOPOLOGY_FIELDS)
+    # Static dimensions (may not exist in older lakes).
+    for name, fields in (("topology", ingest.TOPOLOGY_FIELDS),
+                         ("sites", ingest.SITES_FIELDS)):
+        try:
+            con.register(name, catalog.load_table((namespace, name)).scan().to_arrow())
+        except Exception:
+            _register_empty(con, name, fields)
     return con
 
 

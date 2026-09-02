@@ -5,9 +5,51 @@
 
 sample_interval_s: 30
 noise_pct: 0.08          # gaussian noise std = noise_pct * baseline mean
+
+# 25 globally distributed sites, each tagged by type and region (multi-site /
+# multi-jurisdiction fleet). Sites may be plain strings (legacy) or {name, type,
+# region} maps. The (site -> type, region) mapping is emitted as a `sites`
+# dimension table so vm_metrics keeps its contract; join on `site` to slice by
+# location_type or region. Types: manufacturing | warehouse | sales_office |
+# customer_club. VMs are round-robin-assigned across sites.
 sites:
-  - dc-east
-  - dc-west
+  - {name: na-plant-chicago,    type: manufacturing, region: NA}
+  - {name: na-plant-detroit,    type: manufacturing, region: NA}
+  - {name: na-wh-dallas,        type: warehouse,     region: NA}
+  - {name: na-wh-atlanta,       type: warehouse,     region: NA}
+  - {name: na-sales-nyc,        type: sales_office,  region: NA}
+  - {name: na-club-la,          type: customer_club, region: NA}
+  - {name: na-club-miami,       type: customer_club, region: NA}
+  - {name: emea-plant-manchester, type: manufacturing, region: EMEA}
+  - {name: emea-wh-rotterdam,   type: warehouse,     region: EMEA}
+  - {name: emea-sales-london,   type: sales_office,  region: EMEA}
+  - {name: emea-club-paris,     type: customer_club, region: EMEA}
+  - {name: emea-club-madrid,    type: customer_club, region: EMEA}
+  - {name: dach-plant-stuttgart, type: manufacturing, region: DACH}
+  - {name: dach-plant-munich,   type: manufacturing, region: DACH}
+  - {name: dach-wh-frankfurt,   type: warehouse,     region: DACH}
+  - {name: dach-sales-berlin,   type: sales_office,  region: DACH}
+  - {name: dach-club-vienna,    type: customer_club, region: DACH}
+  - {name: apac-plant-shenzhen, type: manufacturing, region: APAC}
+  - {name: apac-wh-singapore,   type: warehouse,     region: APAC}
+  - {name: apac-wh-tokyo,       type: warehouse,     region: APAC}
+  - {name: apac-sales-sydney,   type: sales_office,  region: APAC}
+  - {name: apac-club-mumbai,    type: customer_club, region: APAC}
+  - {name: latam-plant-saopaulo, type: manufacturing, region: LATAM}
+  - {name: latam-wh-mexico,     type: warehouse,     region: LATAM}
+  - {name: latam-sales-bogota,  type: sales_office,  region: LATAM}
+
+# Per-type baseline multipliers on metric means (applied per VM by its site type).
+# Shapes each location type's workload/failure profile. Missing metric = 1.0.
+type_profiles:
+  manufacturing:   # MES/line-side, steady load, low variance
+    {cpu_pct: 1.05, app_latency_ms: 0.9, error_rate_pct: 0.7, net_mbps: 0.9}
+  warehouse:       # WMS/fulfillment, bursty around shipping windows; io/heap pressure
+    {disk_io_await_ms: 1.4, disk_iops: 1.3, heap_mb: 1.15, gc_pause_ms: 1.2, net_mbps: 1.1}
+  sales_office:    # ERP/CRM clients, business-hours diurnal
+    {cpu_pct: 0.9, app_latency_ms: 1.1, net_mbps: 0.8}
+  customer_club:   # POS/storefront, revenue-facing, latency-sensitive
+    {net_mbps: 1.25, app_latency_ms: 1.05, error_rate_pct: 1.2, disk_iops: 1.1}
 
 # App-level dependency edges (M5): "app depends_on the listed apps". Drives the
 # topology table and the blast-radius graph traversal. Reflects the chains
