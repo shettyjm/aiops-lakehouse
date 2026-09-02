@@ -15,12 +15,13 @@
 #   oc apply -f bin/deploy_ollama.yaml
 #   oc rollout status deploy/ollama
 #
-# Pull the model (small enough for CPU/SNO):
-#   oc exec deploy/ollama -- ollama pull granite3-dense:8b   # or qwen2.5:7b-instruct
+# Pull the model. Light Granite MoE (3B) is fast on CPU for the demo:
+#   oc exec deploy/ollama -- ollama pull granite3.1-moe:3b
+#   # heavier: granite3.1-dense:8b, qwen2.5:7b-instruct
 #
 # Point config.ini [model] at the in-cluster service:
 #   base_url   = http://ollama.aiops.svc.cluster.local:11434/v1
-#   model_name = granite3-dense:8b
+#   model_name = granite3.1-moe:3b
 #
 # If docker.io is blocked or rate-limited on your cluster, mirror the image
 # first and change `image:` below to your internal registry, e.g.:
@@ -74,14 +75,16 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          # Sized for a light 3B model (granite3.1-moe:3b, ~2GB). Bump memory
+          # to 8Gi/12Gi if you pull an 8B model instead.
           resources:
             requests:
               cpu: "2"
-              memory: 8Gi
+              memory: 4Gi
               ephemeral-storage: 2Gi
             limits:
               cpu: "6"
-              memory: 12Gi
+              memory: 8Gi
               ephemeral-storage: 4Gi
           volumeMounts:
             - name: models

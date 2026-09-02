@@ -21,13 +21,16 @@ access_key = CHANGEME
 secret_key = CHANGEME
 
 [model]
-# backend: ollama | openshift_ai | claude
+# backend: ollama | openshift_ai | claude | none
 backend = ollama
 # base_url: OpenAI-compatible endpoint for ollama/openshift_ai
-#   ollama:       http://ollama:11434/v1
-#   openshift_ai: https://<vllm-route>/v1
-base_url = http://ollama:11434/v1
-model_name = granite3-dense:8b
+#   ollama (in-cluster): http://ollama.aiops.svc.cluster.local:11434/v1
+#   openshift_ai:        https://<vllm-route>/v1
+base_url = http://ollama.aiops.svc.cluster.local:11434/v1
+# model_name: light Granite MoE (3B) is fast on CPU for the demo.
+#   heavier/better: granite3.1-dense:8b, qwen2.5:7b-instruct
+#   even lighter:   granite3.1-moe:1b, granite3.1-dense:2b, qwen2.5:3b-instruct
+model_name = granite3.1-moe:3b
 # api_key: required for claude backend (ANTHROPIC_API_KEY); optional otherwise.
 api_key =
 

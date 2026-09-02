@@ -29,16 +29,17 @@ oc adm top nodes
 
 ### Sizing (per the m5.4xlarge lab node)
 
-| Resource | Ollama (8B, Q4) | Manifest req/limit | Notes |
-|---|---|---|---|
-| Memory | ~6–7 GiB runtime | 8Gi / 12Gi | comfortable on a 64 GiB node |
-| CPU | inference-bound | 2 / 6 | **slow on CPU — tens of sec/answer** |
-| Model storage | ~5 GB per model | 20Gi PVC | on a real StorageClass (EBS), not node disk |
-| Image pull | ~2 GB | 2Gi/4Gi ephemeral | uses node ephemeral storage |
+Demo default is the **light `granite3.1-moe:3b`** (MoE, ~2 GB, fast on CPU):
 
-CPU inference is deliberately slow — that's the sovereignty/quality trade-off.
-The copilot's **deterministic fallback answers instantly** regardless, so the
-demo never stalls.
+| Resource | granite3.1-moe:3b | 8B model | Manifest req/limit | Notes |
+|---|---|---|---|---|
+| Memory | ~3–4 GiB runtime | ~6–7 GiB | 4Gi / 8Gi (bump for 8B) | fine on a 64 GiB node |
+| CPU | inference-bound | inference-bound | 2 / 6 | 3B answers in a few sec; 8B tens of sec |
+| Model storage | ~2 GB | ~5 GB | 20Gi PVC | on a real StorageClass (EBS), not node disk |
+| Image pull | ~2 GB | ~2 GB | 2Gi/4Gi ephemeral | uses node ephemeral storage |
+
+The 3B keeps answers snappy on CPU; if a small model fumbles tool-calling the
+copilot's **deterministic fallback answers instantly**, so the demo never stalls.
 
 ---
 
@@ -54,8 +55,8 @@ oc get pods -l app=ollama
 Pull a model into the pod (persists on the PVC):
 
 ```bash
-oc exec deploy/ollama -- ollama pull granite3-dense:8b   # ~5 GB, small enough for CPU/SNO
-# alternatives: qwen2.5:7b-instruct  (good SQL tool-calling)
+oc exec deploy/ollama -- ollama pull granite3.1-moe:3b   # ~2 GB, fast on CPU (demo default)
+# heavier: granite3.1-dense:8b, qwen2.5:7b-instruct
 oc exec deploy/ollama -- ollama list
 ```
 
@@ -69,7 +70,7 @@ In `config.ini` `[model]`:
 [model]
 backend    = ollama
 base_url   = http://ollama.aiops.svc.cluster.local:11434/v1   # in-cluster
-model_name = granite3-dense:8b
+model_name = granite3.1-moe:3b
 ```
 
 (From your laptop instead of in-cluster, use the external Route:
