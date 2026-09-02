@@ -97,6 +97,26 @@ def test_answer_none_uses_deterministic():
     assert "patient-onboarding" in res.text
 
 
+def test_answer_summarizes_real_rows_when_model_wont_tool_call(monkeypatch):
+    """Model returns text but never called a tool -> we don't trust its numbers;
+    we fetch real rows and have it summarize those."""
+    tools, _ = _tools_with_leak()
+    # model 'answers' without any tool call (hallucination risk)
+    monkeypatch.setattr(copilot, "_run_openai",
+                        lambda *a, **k: copilot.AgentResult(text="made up stuff",
+                                                            tool_calls=[], backend="openai"))
+    seen = {}
+    def fake_sum(cfg, backend, question, g):
+        seen["facts"] = copilot.facts_text(g)   # got REAL data
+        return "Grounded summary of the real rows."
+    monkeypatch.setattr(copilot, "_summarize_with_model", fake_sum)
+    res = copilot.answer("why is patient onboarding slow?", tools, cfg=_FakeCfg(),
+                         backend="ollama", asof_min=30)
+    assert res.used_fallback
+    assert res.text.startswith("Grounded summary of the real rows.")
+    assert "patient-onboarding" in seen["facts"]   # the model was fed real facts
+
+
 def test_answer_falls_back_when_backend_raises(monkeypatch):
     tools, _ = _tools_with_leak()
     monkeypatch.setattr(copilot, "_run_openai",

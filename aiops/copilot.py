@@ -165,12 +165,11 @@ def _target_app(question: str, tools: LakeTools) -> str:
     return df[0] if df else APPS[0]
 
 
-def deterministic_answer(question: str, tools: LakeTools, asof_min: float = 0.0) -> str:
-    """A grounded RCA built purely from SQL — no model required.
-    Plan: is the app slow? -> which of its VMs are worst -> matching alerts."""
+def _gather(question: str, tools: LakeTools, asof_min: float = 0.0) -> dict:
+    """Run the fixed RCA SQL plan and return the raw facts (shared by the
+    deterministic narrative and the model-summarise fallback)."""
     from datetime import timedelta
     app = _target_app(question, tools)
-    # recent 10-min window and the clean startup baseline window
     t_end = detect.evaluation_end(tools.con, asof_min)
     end = detect._ts_literal(t_end)
     rlo = detect._ts_literal(t_end - timedelta(minutes=10))
@@ -184,8 +183,6 @@ def deterministic_answer(question: str, tools: LakeTools, asof_min: float = 0.0)
           (SELECT quantile_cont(app_latency_ms,0.95) FROM vm_metrics
              WHERE app='{app}' AND ts>={blo} AND ts<{bhi}) AS p95_base
     """).fetchone()
-    p95_now, p95_base = (lat[0] or 0.0), (lat[1] or 0.0)
-
     worst = tools.con.execute(f"""
         SELECT vm_id,
                regr_slope(heap_mb, epoch(ts)/60.0) heap_slope,
@@ -196,11 +193,36 @@ def deterministic_answer(question: str, tools: LakeTools, asof_min: float = 0.0)
         FROM vm_metrics
         WHERE app='{app}' AND ts>{rlo} AND ts<={end}
         GROUP BY vm_id ORDER BY latency DESC LIMIT 3""").fetch_df()
-
     alerts = detect.detect(tools.con, tools.dc, asof_min=asof_min)
     app_alerts = alerts[alerts["app"] == app] if not alerts.empty else alerts
+    return {"app": app, "t_end": t_end, "p95_now": (lat[0] or 0.0),
+            "p95_base": (lat[1] or 0.0), "worst": worst, "app_alerts": app_alerts}
 
-    # compose
+
+def facts_text(g: dict) -> str:
+    """Compact real-data block to hand a model that wouldn't call the tools."""
+    cols = ["severity", "rule", "vm_id", "app", "headline"]
+    al = g["app_alerts"]
+    return "\n".join([
+        f"app: {g['app']}",
+        f"app_latency_ms p95: now={g['p95_now']:.0f} ms, baseline={g['p95_base']:.0f} ms",
+        "worst VMs (recent 10 min) — heap_slope in MB/min, heap_now in MB, "
+        "gc/io_await/latency in ms:",
+        g["worst"].to_string(index=False),
+        "active alerts:",
+        (al[cols].to_string(index=False) if not al.empty else "none"),
+    ])
+
+
+def deterministic_answer(question: str, tools: LakeTools, asof_min: float = 0.0) -> str:
+    """A grounded RCA built purely from SQL — no model required."""
+    return _narrative(_gather(question, tools, asof_min), tools.dc)
+
+
+def _narrative(g: dict, dc: detect.DetectConfig) -> str:
+    app, t_end = g["app"], g["t_end"]
+    p95_now, p95_base = g["p95_now"], g["p95_base"]
+    worst, app_alerts = g["worst"], g["app_alerts"]
     lines = [f"## {app}: root-cause summary (as of {t_end:%H:%M:%S})", ""]
     if p95_base > 0 and p95_now > p95_base * 1.3:
         lines.append(f"- **Latency is elevated**: p95 {p95_now:.0f} ms vs baseline "
@@ -212,8 +234,8 @@ def deterministic_answer(question: str, tools: LakeTools, asof_min: float = 0.0)
     if not worst.empty:
         w = worst.iloc[0]
         detail = []
-        if w.heap_slope > 8 and w.heap_now > tools.dc.heap_cap_mb * 0.6:
-            eta = (tools.dc.heap_cap_mb - w.heap_now) / w.heap_slope
+        if w.heap_slope > 8 and w.heap_now > dc.heap_cap_mb * 0.6:
+            eta = (dc.heap_cap_mb - w.heap_now) / w.heap_slope
             detail.append(f"heap climbing +{w.heap_slope:.0f} MB/min "
                           f"(now {w.heap_now:.0f} MB, OOM ETA ~{eta:.0f} min)")
         if w.gc > 80:
@@ -267,10 +289,22 @@ def _run_openai(cfg, question, tools: LakeTools, model=None, max_steps=6) -> Age
     messages = [{"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": question}]
     calls = []
-    for _ in range(max_steps):
-        resp = client.chat.completions.create(
-            model=model, messages=messages, tools=openai_tools(),
-            tool_choice="auto", temperature=0)
+    for step in range(max_steps):
+        # Force a tool call on the first step so small models must ground their
+        # answer in the lake instead of hallucinating numbers; then let them
+        # summarise. Some servers reject tool_choice="required" -> fall back.
+        tc = "required" if step == 0 else "auto"
+        try:
+            resp = client.chat.completions.create(
+                model=model, messages=messages, tools=openai_tools(),
+                tool_choice=tc, temperature=0)
+        except Exception:
+            if tc == "required":
+                resp = client.chat.completions.create(
+                    model=model, messages=messages, tools=openai_tools(),
+                    tool_choice="auto", temperature=0)
+            else:
+                raise
         msg = resp.choices[0].message
         if not msg.tool_calls:
             return AgentResult(text=msg.content or "", tool_calls=calls, backend="openai")
@@ -315,6 +349,32 @@ def _run_claude(cfg, question, tools: LakeTools, model="claude-sonnet-5",
                        backend="claude")
 
 
+SUMMARY_SYSTEM = (
+    "You are an SRE for a healthcare EHR SaaS. Summarize the query results below "
+    "for the on-call engineer. Use ONLY the numbers provided — never invent data. "
+    "State the likely root cause and a recommended action, concisely.")
+
+
+def _summarize_with_model(cfg, backend: str, question: str, g: dict) -> str:
+    """Have the model narrate REAL query results (used when it won't tool-call)."""
+    prompt = f"{question}\n\nQuery results from the lake:\n{facts_text(g)}"
+    if backend == "claude":
+        import anthropic
+        client = anthropic.Anthropic(api_key=cfg.get("model", "api_key", fallback="") or None)
+        resp = client.messages.create(
+            model="claude-sonnet-5", system=SUMMARY_SYSTEM, max_tokens=512,
+            messages=[{"role": "user", "content": prompt}])
+        return "".join(b.text for b in resp.content if b.type == "text")
+    from openai import OpenAI
+    client = OpenAI(base_url=cfg.get("model", "base_url"),
+                    api_key=cfg.get("model", "api_key", fallback="") or "not-needed")
+    resp = client.chat.completions.create(
+        model=cfg.get("model", "model_name"), temperature=0,
+        messages=[{"role": "system", "content": SUMMARY_SYSTEM},
+                  {"role": "user", "content": prompt}])
+    return resp.choices[0].message.content or ""
+
+
 def answer(question: str, tools: LakeTools, cfg, backend: str,
            asof_min: float = 0.0) -> AgentResult:
     """Answer via the chosen backend, falling back to the deterministic RCA if
@@ -329,9 +389,28 @@ def answer(question: str, tools: LakeTools, cfg, backend: str,
             res = _run_claude(cfg, question, tools)
         else:
             raise BackendError(f"unknown backend: {backend}")
-        if res.text.strip():
-            return res
-        raise BackendError("empty model response")
+        if not res.text.strip():
+            raise BackendError("empty model response")
+        # Grounding guard: if the model never queried the lake, its own numbers
+        # aren't trustworthy (small models hallucinate). Fetch the real rows and
+        # have it SUMMARISE those instead; if that fails, use the SQL narrative.
+        if not res.tool_calls:
+            g = _gather(question, tools, asof_min)
+            try:
+                summary = _summarize_with_model(cfg, backend, question, g)
+                if summary.strip():
+                    return AgentResult(
+                        text=summary + f"\n\n_({backend} summarised real query "
+                             f"results — it didn't tool-call, so the lake was "
+                             f"queried for it.)_",
+                        backend=backend, used_fallback=True)
+            except Exception:
+                pass
+            return AgentResult(
+                text=_narrative(g, tools.dc) + "\n\n_(model didn't query the lake; "
+                     "deterministic SQL result.)_",
+                backend=backend, used_fallback=True)
+        return res
     except Exception as e:
         det = deterministic_answer(question, tools, asof_min)
         return AgentResult(
