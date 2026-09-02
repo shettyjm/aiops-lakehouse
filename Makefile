@@ -5,7 +5,8 @@
 # Extra flags pass through via ARGS:
 #   make chat ARGS='"why is patient onboarding slow?" --backend ollama'
 
-PYTHON ?= python3
+# Prefer the project venv if present, else system python3.
+PYTHON ?= $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
 CONFIG ?= config.ini
 ALIAS  ?= aiops
 SOURCE ?= local
@@ -37,8 +38,8 @@ detect: ## Run detection engine, write alerts (M3)
 replay: ## Heap-leak early-warning replay timeline (M3 money-shot)
 	./bin/replay_demo.sh --source $(SOURCE) $(ARGS)
 
-chat: ## Ask the SRE copilot a question (M4)
-	$(PYTHON) bin/05_copilot.py --source $(SOURCE) $(ARGS)
+chat: ## Ask the copilot (M4). ARGS='"why is onboarding slow?" --backend ollama'
+	$(PYTHON) bin/05_copilot.py $(ARGS)
 
 dashboard: ## Launch the read-only Streamlit dashboard (M6). SOURCE=iceberg|local
 	$(PYTHON) -m streamlit run bin/dashboard.py -- --source $(SOURCE)
